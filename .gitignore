@@ -1,0 +1,4 @@
+gif-converter/output
+gif-converter/.venv
+.cache/
+build/

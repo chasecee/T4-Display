@@ -7,6 +7,12 @@ ESP-IDF project for LilyGO T4 V1.3 with ILI9341 2.4" display.
 - **LilyGO T4 V1.3** board with ESP32
 - **2.4" ILI9341 LCD Display** (240x320)
 - SPI interface communication
+- SPECS:
+- MCU ESP32
+- Flash 4MB
+- PSRAM 8MB
+- Wireless Connectivity Wi-fi 802.11 b/g/n, BL V4.2+BLE
+- Programming Platform Arduino-ide, Micropython
 
 ## Current Status
 
