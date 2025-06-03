@@ -1,0 +1,6 @@
+# Set target
+CONFIG_IDF_TARGET="esp32"
+
+# Custom partition table with SPIFFS support
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv" 

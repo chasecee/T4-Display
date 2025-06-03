@@ -1,0 +1,12 @@
+{
+  "idf.espIdfPath": "/Users/chase/esp/esp-idf",
+  "idf.pythonBinPath": "/usr/bin/python3",
+  "idf.toolsPath": "/Users/chase/.espressif",
+  "idf.port": "/dev/tty.usbserial-59260234691", // or COM3 on Windows
+  "idf.openOcdConfigs": [
+    "interface/ftdi/esp32_devkitj_v1.cfg",
+    "target/esp32.cfg"
+  ],
+  "idf.pythonInstallPath": "/opt/homebrew/bin/python3",
+  "idf.flashType": "UART"
+}

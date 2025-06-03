@@ -1,0 +1,13 @@
+# Target labels
+ bootloader
+# Source files and their labels
+/Users/chase/Code/T4-Display/build/CMakeFiles/bootloader
+/Users/chase/Code/T4-Display/build/CMakeFiles/bootloader.rule
+/Users/chase/Code/T4-Display/build/CMakeFiles/bootloader-complete.rule
+/Users/chase/Code/T4-Display/build/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule
+/Users/chase/Code/T4-Display/build/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule
+/Users/chase/Code/T4-Display/build/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule
+/Users/chase/Code/T4-Display/build/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule
+/Users/chase/Code/T4-Display/build/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule
+/Users/chase/Code/T4-Display/build/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule
+/Users/chase/Code/T4-Display/build/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule

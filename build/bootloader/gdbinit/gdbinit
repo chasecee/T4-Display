@@ -1,0 +1,2 @@
+source /Users/chase/Code/T4-Display/build/bootloader/gdbinit/symbols
+source /Users/chase/Code/T4-Display/build/bootloader/gdbinit/connect
