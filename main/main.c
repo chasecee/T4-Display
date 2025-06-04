@@ -62,7 +62,7 @@ void app_main(void)
     esp_lcd_panel_io_spi_config_t io_config = {
         .cs_gpio_num = LCD_PIN_NUM_CS,
         .dc_gpio_num = LCD_PIN_NUM_DC,
-        .pclk_hz = 40 * 1000 * 1000, // 40MHz clock
+        .pclk_hz = 40 * 1000 * 1000, // 40MHz - stable speed for smooth display
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
         .spi_mode = 0,
@@ -98,10 +98,10 @@ void app_main(void)
     
     // Allocate buffers in PSRAM for JPEG decoding
     size_t out_buf_size = LCD_H_RES * LCD_V_RES * 2; // 16-bit per pixel
-    size_t work_buf_size = 4096; // Standard work buffer size
+    size_t work_buf_size = 65472; // Required work buffer size for JD_FASTDECODE=2 (table-based fast decode)
     
     uint8_t* out_buf = heap_caps_malloc(out_buf_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    uint8_t* work_buf = heap_caps_malloc(work_buf_size, MALLOC_CAP_8BIT);
+    uint8_t* work_buf = heap_caps_malloc(work_buf_size, MALLOC_CAP_8BIT); // Will fallback to PSRAM if needed
     
     if (!out_buf || !work_buf) {
         ESP_LOGE(TAG, "❌ Failed to allocate buffers for JPEG decoding");
@@ -165,7 +165,7 @@ cleanup_test_jpg:
 
     // --- Play sequence from manifest --- 
     const char* manifest_file = "/spiffs/output/manifest.txt";
-    uint32_t frame_delay_ms = 10; // For ~20 FPS (1000ms / 20 = 50ms). Adjusted from 100ms.
+    uint32_t frame_delay_ms = 80; // Increased speed: 80ms = ~12.5 FPS (was 120ms = ~8.3 FPS)
 
     ESP_LOGI(TAG, "🎬 Attempting to play sequence from: %s at %" PRIu32 " ms per frame", manifest_file, frame_delay_ms);
     

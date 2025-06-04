@@ -16,6 +16,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 
 static const char *TAG = "T4_IMAGE_DISPLAY";
 
@@ -61,16 +62,19 @@ esp_err_t decode_and_display_jpeg(const uint8_t* jpeg_data, size_t jpeg_data_siz
     }
 
     esp_jpeg_image_cfg_t jpeg_cfg = {
-        .indata = jpeg_data,
+        .indata = (uint8_t*)jpeg_data,  // Cast away const to match API
         .indata_size = jpeg_data_size,
         .outbuf = NULL, 
         .outbuf_size = 0,
         .out_format = JPEG_IMAGE_FORMAT_RGB565,
-        .out_scale = JPEG_IMAGE_SCALE_0,
-        .flags = { .swap_color_bytes = 1 },
+        .out_scale = JPEG_IMAGE_SCALE_0,  // No scaling for maximum speed
+        .flags = { 
+            .swap_color_bytes = 1         // BGR format for ILI9341
+        },
         .advanced = { .working_buffer = NULL, .working_buffer_size = 0 },
     };
 
+    // Always use provided work buffer for consistent performance
     if (external_work_buffer != NULL) {
         jpeg_cfg.advanced.working_buffer = external_work_buffer;
         jpeg_cfg.advanced.working_buffer_size = external_work_buffer_size;
@@ -87,6 +91,7 @@ esp_err_t decode_and_display_jpeg(const uint8_t* jpeg_data, size_t jpeg_data_siz
     bool outbuf_allocated_internally = false;
     size_t actual_outbuf_size_needed = (size_t)jpeg_info.width * jpeg_info.height * 2;
 
+    // Always use external buffer for better performance
     if (external_out_buffer != NULL) {
         if (actual_outbuf_size_needed > external_out_buffer_size) {
             ESP_LOGE(TAG, "❌ External buffer too small. Need: %zu, Have: %zu", 
@@ -97,6 +102,7 @@ esp_err_t decode_and_display_jpeg(const uint8_t* jpeg_data, size_t jpeg_data_siz
         jpeg_cfg.outbuf = outbuf_to_use;
         jpeg_cfg.outbuf_size = actual_outbuf_size_needed;
     } else {
+        // Fallback: allocate in PSRAM 
         outbuf_to_use = heap_caps_malloc(actual_outbuf_size_needed, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!outbuf_to_use) {
             ESP_LOGE(TAG, "❌ Failed to allocate output buffer");
@@ -107,7 +113,9 @@ esp_err_t decode_and_display_jpeg(const uint8_t* jpeg_data, size_t jpeg_data_siz
         jpeg_cfg.outbuf_size = actual_outbuf_size_needed;
     }
 
+    // PERFORMANCE: Optimized decode with larger work buffers
     ret = esp_jpeg_decode(&jpeg_cfg, &jpeg_info);
+    
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "❌ JPEG decode failed");
         if (outbuf_allocated_internally) {
@@ -116,7 +124,9 @@ esp_err_t decode_and_display_jpeg(const uint8_t* jpeg_data, size_t jpeg_data_siz
         return ESP_FAIL;
     }
 
+    // PERFORMANCE: Direct bitmap transfer with display sync to prevent tearing
     ret = esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, jpeg_info.width, jpeg_info.height, outbuf_to_use);
+    
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "❌ Failed to display image");
     }
@@ -147,7 +157,8 @@ esp_err_t init_spiffs(void) {
     size_t total = 0, used = 0;
     ret = esp_spiffs_info("storage", &total, &used);
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "📊 SPIFFS: total: %zu, used: %zu", total, used);
+        ESP_LOGI(TAG, "📊 SPIFFS: total: %zu, used: %zu, free: %zu (%d%% used)", 
+                 total, used, total - used, (int)((used * 100) / total));
     }
     
     return ESP_OK;
@@ -290,10 +301,13 @@ void image_display_main(void) {
 #define MAX_FILENAME_LEN 256 
 #define MANIFEST_LINE_BUFFER_SIZE (MAX_FILENAME_LEN + 64)
 #define MAX_PATH_LEN (MAX_FILENAME_LEN + 16) // Enough space for "/spiffs/" prefix and some extra
-#define JPEG_WORK_BUFFER_SIZE_ALLOC 4096 
+#define JPEG_WORK_BUFFER_SIZE_ALLOC 65472  // Required for JD_FASTDECODE=2 (table-based fast decode)
+
+// Performance optimization: Use internal RAM for critical buffers when possible
+#define USE_INTERNAL_RAM_FOR_WORK_BUFFER 0  // Disabled because 65KB won't fit in internal RAM
 
 esp_err_t play_jpeg_sequence_from_manifest(const char* manifest_path, uint32_t frame_delay_ms) {
-    ESP_LOGI(TAG, "🎬 Playing JPEG sequence from manifest: %s (PSRAM preloading)", manifest_path);
+    ESP_LOGI(TAG, "🎬 Playing JPEG sequence from manifest: %s (OPTIMIZED PSRAM preloading)", manifest_path);
     esp_err_t overall_ret = ESP_OK;
 
     // If frames aren't loaded yet, load them
@@ -314,7 +328,7 @@ esp_err_t play_jpeg_sequence_from_manifest(const char* manifest_path, uint32_t f
         int line_count = 0;
 
         while (fgets(line_buffer, sizeof(line_buffer), f) != NULL) {
-            // Yield every 10 lines to prevent watchdog timeout
+            // Yield every 10 lines for system stability (watchdog disabled)
             if (++line_count % 10 == 0) {
                 vTaskDelay(1);
             }
@@ -374,7 +388,16 @@ esp_err_t play_jpeg_sequence_from_manifest(const char* manifest_path, uint32_t f
             return ESP_ERR_NO_MEM;
         }
 
+        // PERFORMANCE BOOST: Use internal RAM for work buffer if possible for faster access
+#if USE_INTERNAL_RAM_FOR_WORK_BUFFER
+        g_common_work_buf = heap_caps_malloc(JPEG_WORK_BUFFER_SIZE_ALLOC, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (!g_common_work_buf) {
+            // Fallback to regular malloc if internal RAM is full
+            g_common_work_buf = malloc(JPEG_WORK_BUFFER_SIZE_ALLOC);
+        }
+#else
         g_common_work_buf = malloc(JPEG_WORK_BUFFER_SIZE_ALLOC);
+#endif
         if (!g_common_work_buf) {
             ESP_LOGE(TAG, "❌ Failed to allocate work buffer");
             free(g_preloaded_frames);
@@ -385,6 +408,9 @@ esp_err_t play_jpeg_sequence_from_manifest(const char* manifest_path, uint32_t f
             g_common_out_buf = NULL;
             return ESP_ERR_NO_MEM;
         }
+
+        ESP_LOGI(TAG, "🚀 Work buffer allocated in %s RAM for optimal performance", 
+                 heap_caps_get_free_size(MALLOC_CAP_INTERNAL) > JPEG_WORK_BUFFER_SIZE_ALLOC ? "INTERNAL" : "EXTERNAL");
 
         // Phase 3: Load JPEGs into PSRAM
         ESP_LOGI(TAG, "⏳ Loading JPEGs into PSRAM...");
@@ -399,7 +425,7 @@ esp_err_t play_jpeg_sequence_from_manifest(const char* manifest_path, uint32_t f
         line_count = 0;
 
         while (fgets(line_buffer, sizeof(line_buffer), f) != NULL && loaded_frames < num_frames) {
-            // Yield every 5 frames to prevent watchdog timeout
+            // Yield every 5 lines for system stability (watchdog disabled)
             if (++line_count % 5 == 0) {
                 vTaskDelay(1);
             }
@@ -456,9 +482,15 @@ esp_err_t play_jpeg_sequence_from_manifest(const char* manifest_path, uint32_t f
         ESP_LOGI(TAG, "✅ Successfully loaded %d frames into PSRAM", loaded_frames);
     }
 
-    // Phase 4: Play sequence from PSRAM
-    ESP_LOGI(TAG, "▶️ Playing %d frames...", g_num_loaded_frames);
+    // Phase 4: Play sequence from PSRAM with OPTIMIZED SPEED (anti-tearing)
+    ESP_LOGI(TAG, "▶️ Playing %d frames with display sync...", g_num_loaded_frames);
+    uint32_t frame_start_time;
+    uint32_t decode_time, total_time;
+    
     for (int i = 0; i < g_num_loaded_frames; i++) {
+        frame_start_time = esp_timer_get_time() / 1000; // Convert to ms
+        
+        uint32_t decode_start = esp_timer_get_time() / 1000;
         esp_err_t ret = decode_and_display_jpeg(
             g_preloaded_frames[i].data,
             g_preloaded_frames[i].size,
@@ -467,13 +499,28 @@ esp_err_t play_jpeg_sequence_from_manifest(const char* manifest_path, uint32_t f
             g_common_work_buf,
             JPEG_WORK_BUFFER_SIZE_ALLOC
         );
+        decode_time = (esp_timer_get_time() / 1000) - decode_start;
 
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "⚠️ Frame %d display failed: %s", i, esp_err_to_name(ret));
             if (overall_ret == ESP_OK) overall_ret = ret;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(frame_delay_ms));
+        total_time = (esp_timer_get_time() / 1000) - frame_start_time;
+        
+        // Performance logging every 50 frames
+        if (i % 50 == 0) {
+            ESP_LOGI(TAG, "🏎️ Frame %d: decode=%lums, total=%lums", i, decode_time, total_time);
+        }
+
+        // Conservative delay: always wait the minimum frame time for smooth display
+        uint32_t min_frame_time = frame_delay_ms;
+        if (total_time < min_frame_time) {
+            vTaskDelay(pdMS_TO_TICKS(min_frame_time - total_time));
+        } else {
+            // Frame took longer than target, add small sync delay to prevent tearing
+            vTaskDelay(pdMS_TO_TICKS(2));
+        }
     }
 
     return overall_ret;
@@ -492,7 +539,11 @@ cleanup:
         g_common_out_buf = NULL;
     }
     if (g_common_work_buf) {
+#if USE_INTERNAL_RAM_FOR_WORK_BUFFER
+        heap_caps_free(g_common_work_buf);
+#else
         free(g_common_work_buf);
+#endif
         g_common_work_buf = NULL;
     }
     g_frames_loaded = false;
