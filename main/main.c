@@ -152,8 +152,7 @@ void app_main(void)
     heap_caps_free(jpeg_data);
     
     if (test_img_ret == ESP_OK) {
-        ESP_LOGI(TAG, "✅ test.jpg displayed successfully. Holding for 3 seconds...");
-        vTaskDelay(pdMS_TO_TICKS(3000));
+        ESP_LOGI(TAG, "✅ test.jpg displayed successfully. Will stay as loading screen while frames load...");
     } else {
         ESP_LOGE(TAG, "❌ Failed to display test.jpg. Error: %s", esp_err_to_name(test_img_ret));
         vTaskDelay(pdMS_TO_TICKS(1000));
@@ -163,7 +162,7 @@ cleanup_test_jpg:
     if (out_buf) heap_caps_free(out_buf);
     if (work_buf) heap_caps_free(work_buf);
 
-    // --- Play sequence from manifest --- 
+    // --- Play sequence from manifest (test.jpg stays visible during loading) --- 
     const char* manifest_file = "/spiffs/output/manifest.txt";
     uint32_t frame_delay_ms = 80; // Increased speed: 80ms = ~12.5 FPS (was 120ms = ~8.3 FPS)
 
