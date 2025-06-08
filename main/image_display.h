@@ -3,6 +3,8 @@
 #include "esp_err.h"
 #include <stddef.h> // For size_t
 
+#define UPSCALE_MODE 1  // 0 = no upscale, 1 = nearest-neighbour 2×
+
 // Structure to hold information about a preloaded JPEG frame
 typedef struct {
     uint8_t* data; // Pointer to JPEG data in PSRAM

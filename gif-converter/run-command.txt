@@ -1,1 +1,1 @@
-python convert.py --source ./source --output ./output --size 320 240 --rotate 0 --frame_stride 1 --jpeg_quality 75 --qtables auto --post_optimize --clear_output
+python convert.py --source ./source --output ../data/output --size 106 80 --rotate 0 --frame_stride 1 --jpeg_quality 75 --qtables auto --post_optimize --clear_output

@@ -17,6 +17,8 @@
 #include <sys/stat.h>
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include <assert.h>
+#include "encoder.h"
 
 static const char *TAG = "T4_IMAGE_DISPLAY";
 
@@ -51,6 +53,98 @@ static uint8_t* g_common_out_buf = NULL;
 static uint8_t* g_common_work_buf = NULL;
 static int g_num_loaded_frames = 0;
 static bool g_frames_loaded = false;
+
+extern volatile uint32_t g_frame_delay_ms;
+
+#include <assert.h>
+
+/*-----------------------------------------------------------------------
+ * Optional 2× up-scalers controlled by UPSCALE_MODE (see image_display.h)
+ *   0 – none
+ *   1 – nearest-neighbour (already very fast)
+ *   2 – bilinear (slightly smoother, ~2-3 ms extra at 160×120)
+ *---------------------------------------------------------------------*/
+
+#if UPSCALE_MODE == 1
+// Optional ordered-dither variant: instead of making all 4 pixels in the 2×2
+// block identical, sample the neighbouring source pixels in a Bayer-like
+// pattern (TL = centre, TR = right, BL = below, BR = diagonal). This gives a
+// subtle anti-alias look without the cost of bilinear maths and removes the
+// hard block edges that regular nearest-neighbour exhibits. Enable by
+// defining USE_DITHERED_NN at compile time (defaults on).
+#ifndef USE_DITHERED_NN
+#define USE_DITHERED_NN 0 // set to 1 if you prefer the ordered-dither variant
+#endif
+
+#if USE_DITHERED_NN
+static void nn_scale_dither_2x_rgb565(const uint16_t *src, uint16_t *dst, int src_w, int src_h)
+{
+    assert(src_w * 2 == LOGICAL_DISPLAY_WIDTH && src_h * 2 == LOGICAL_DISPLAY_HEIGHT);
+
+    for (int y = 0; y < src_h; y++) {
+        const uint16_t *row0 = src + y * src_w;
+        const uint16_t *row1 = (y + 1 < src_h) ? (row0 + src_w) : row0; // clamp last line
+
+        uint16_t *d_row0 = dst + (y * 2) * LOGICAL_DISPLAY_WIDTH;
+        uint16_t *d_row1 = d_row0 + LOGICAL_DISPLAY_WIDTH;
+
+        for (int x = 0; x < src_w; x++) {
+            uint16_t p00 = row0[x];
+            uint16_t p01 = (x + 1 < src_w) ? row0[x + 1] : p00;
+            uint16_t p10 = row1[x];
+            uint16_t p11 = (x + 1 < src_w) ? row1[x + 1] : p10;
+
+            int dx = x * 2;
+
+            d_row0[dx]     = p00; // top-left: original pixel
+            d_row0[dx + 1] = p01; // top-right: sample right neighbour
+            d_row1[dx]     = p10; // bottom-left: sample below neighbour
+            d_row1[dx + 1] = p11; // bottom-right: diagonal neighbour
+        }
+    }
+}
+#endif // USE_DITHERED_NN
+
+static void nn_scale_2x_rgb565(const uint16_t *src, uint16_t *dst, int src_w, int src_h)
+{
+    assert(src_w * 2 == LOGICAL_DISPLAY_WIDTH && src_h * 2 == LOGICAL_DISPLAY_HEIGHT);
+    for (int y = 0; y < src_h; y++) {
+        const uint16_t *s_row = src + y * src_w;
+        uint16_t *d_row0 = dst + (y * 2) * LOGICAL_DISPLAY_WIDTH;
+        uint16_t *d_row1 = d_row0 + LOGICAL_DISPLAY_WIDTH;
+        for (int x = 0; x < src_w; x++) {
+            uint16_t pix = s_row[x];
+            int d_idx = x * 2;
+            d_row0[d_idx] = pix;
+            d_row0[d_idx + 1] = pix;
+            d_row1[d_idx] = pix;
+            d_row1[d_idx + 1] = pix;
+        }
+    }
+}
+
+// 3× nearest-neighbour (for 106×80 → 318×240). We still use the logical
+// display stride (320) so the 1-pixel margins on left/right stay black.
+static void nn_scale_3x_rgb565(const uint16_t *src, uint16_t *dst, int src_w, int src_h)
+{
+    int dst_w = src_w * 3;
+    for (int y = 0; y < src_h; y++) {
+        const uint16_t *s_row = src + y * src_w;
+        uint16_t *d_row0 = dst + (y * 3) * dst_w;
+        uint16_t *d_row1 = d_row0 + dst_w;
+        uint16_t *d_row2 = d_row1 + dst_w;
+
+        for (int x = 0; x < src_w; x++) {
+            uint16_t pix = s_row[x];
+            int dx = x * 3;
+
+            d_row0[dx] = d_row0[dx + 1] = d_row0[dx + 2] = pix;
+            d_row1[dx] = d_row1[dx + 1] = d_row1[dx + 2] = pix;
+            d_row2[dx] = d_row2[dx + 1] = d_row2[dx + 2] = pix;
+        }
+    }
+}
+#endif // UPSCALE_MODE switch
 
 // Function to decode and display JPEG image from a data buffer
 esp_err_t decode_and_display_jpeg(const uint8_t* jpeg_data, size_t jpeg_data_size, 
@@ -87,30 +181,50 @@ esp_err_t decode_and_display_jpeg(const uint8_t* jpeg_data, size_t jpeg_data_siz
         return ESP_ERR_INVALID_STATE;
     }
 
-    uint8_t* outbuf_to_use = NULL;
+    uint8_t* outbuf_to_use = NULL;        // Buffer into which JPEG is decoded (could be small or full-size)
     bool outbuf_allocated_internally = false;
-    size_t actual_outbuf_size_needed = (size_t)jpeg_info.width * jpeg_info.height * 2;
+    int upscale_factor = 1; // 1 means no upscale
+    if (jpeg_info.width * 2 == LOGICAL_DISPLAY_WIDTH && jpeg_info.height * 2 == LOGICAL_DISPLAY_HEIGHT) {
+        upscale_factor = 2;
+    } else if (jpeg_info.width * 3 <= LOGICAL_DISPLAY_WIDTH && jpeg_info.height * 3 <= LOGICAL_DISPLAY_HEIGHT) {
+        upscale_factor = 3;
+    }
+    bool need_upscale = (upscale_factor > 1);
 
-    // Always use external buffer for better performance
-    if (external_out_buffer != NULL) {
-        if (actual_outbuf_size_needed > external_out_buffer_size) {
-            ESP_LOGE(TAG, "❌ External buffer too small. Need: %zu, Have: %zu", 
-                     actual_outbuf_size_needed, external_out_buffer_size);
-            return ESP_ERR_NO_MEM;
-        }
-        outbuf_to_use = external_out_buffer;
-        jpeg_cfg.outbuf = outbuf_to_use;
-        jpeg_cfg.outbuf_size = actual_outbuf_size_needed;
-    } else {
-        // Fallback: allocate in PSRAM 
+    size_t actual_outbuf_size_needed = (size_t)jpeg_info.width * jpeg_info.height * 2; // Size for decoded image
+
+    if (need_upscale) {
+        // Allocate a *small* temporary buffer for decode
         outbuf_to_use = heap_caps_malloc(actual_outbuf_size_needed, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!outbuf_to_use) {
-            ESP_LOGE(TAG, "❌ Failed to allocate output buffer");
+            ESP_LOGE(TAG, "❌ Failed to allocate temp decode buffer");
             return ESP_ERR_NO_MEM;
         }
         outbuf_allocated_internally = true;
         jpeg_cfg.outbuf = outbuf_to_use;
         jpeg_cfg.outbuf_size = actual_outbuf_size_needed;
+    } else {
+        // Decode straight into external_out_buffer (or allocate fallback)
+        if (external_out_buffer != NULL) {
+            if (actual_outbuf_size_needed > external_out_buffer_size) {
+                ESP_LOGE(TAG, "❌ External buffer too small. Need: %zu, Have: %zu", 
+                         actual_outbuf_size_needed, external_out_buffer_size);
+                return ESP_ERR_NO_MEM;
+            }
+            outbuf_to_use = external_out_buffer;
+            jpeg_cfg.outbuf = outbuf_to_use;
+            jpeg_cfg.outbuf_size = actual_outbuf_size_needed;
+        } else {
+            // Fallback full-size allocate
+            outbuf_to_use = heap_caps_malloc(actual_outbuf_size_needed, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (!outbuf_to_use) {
+                ESP_LOGE(TAG, "❌ Failed to allocate output buffer");
+                return ESP_ERR_NO_MEM;
+            }
+            outbuf_allocated_internally = true;
+            jpeg_cfg.outbuf = outbuf_to_use;
+            jpeg_cfg.outbuf_size = actual_outbuf_size_needed;
+        }
     }
 
     // PERFORMANCE: Optimized decode with larger work buffers
@@ -124,14 +238,52 @@ esp_err_t decode_and_display_jpeg(const uint8_t* jpeg_data, size_t jpeg_data_siz
         return ESP_FAIL;
     }
 
+    // Apply optional up-scale
+#if UPSCALE_MODE == 1
+    if (need_upscale) {
+        if (upscale_factor == 2) {
+            nn_scale_2x_rgb565((uint16_t*)outbuf_to_use, (uint16_t*)external_out_buffer,
+                               jpeg_info.width, jpeg_info.height);
+        } else if (upscale_factor == 3) {
+            nn_scale_3x_rgb565((uint16_t*)outbuf_to_use, (uint16_t*)external_out_buffer,
+                               jpeg_info.width, jpeg_info.height);
+        }
+        // After scaling we can free temp buffer
+        if (outbuf_allocated_internally && outbuf_to_use) {
+            free(outbuf_to_use);
+            outbuf_to_use = NULL;
+            outbuf_allocated_internally = false;
+        }
+        // Now pretend the image is full screen for the draw call
+        jpeg_info.width = jpeg_info.width * upscale_factor;
+        jpeg_info.height = jpeg_info.height * upscale_factor;
+        outbuf_to_use = external_out_buffer;
+    }
+#endif
+
     // PERFORMANCE: Direct bitmap transfer with display sync to prevent tearing
-    ret = esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, jpeg_info.width, jpeg_info.height, outbuf_to_use);
+    // Center the image if it is smaller than the logical display size (after optional upscale)
+    int x_offset = 0;
+    int y_offset = 0;
+    if (jpeg_info.width < LOGICAL_DISPLAY_WIDTH) {
+        x_offset = (LOGICAL_DISPLAY_WIDTH - jpeg_info.width) / 2;
+    }
+    if (jpeg_info.height < LOGICAL_DISPLAY_HEIGHT) {
+        y_offset = (LOGICAL_DISPLAY_HEIGHT - jpeg_info.height) / 2;
+    }
+
+    ret = esp_lcd_panel_draw_bitmap(panel_handle,
+                                    x_offset,
+                                    y_offset,
+                                    x_offset + jpeg_info.width,
+                                    y_offset + jpeg_info.height,
+                                    outbuf_to_use);
     
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "❌ Failed to display image");
     }
 
-    if (outbuf_allocated_internally) {
+    if (outbuf_allocated_internally && outbuf_to_use) {
         free(outbuf_to_use);
     }
     return ret;
@@ -482,6 +634,17 @@ esp_err_t play_jpeg_sequence_from_manifest(const char* manifest_path, uint32_t f
         ESP_LOGI(TAG, "✅ Successfully loaded %d frames into PSRAM", loaded_frames);
     }
 
+    // Clear the screen to black now that frames are loaded (so loading screen stays visible during loading)
+    {
+        uint16_t *black_line = calloc(LOGICAL_DISPLAY_WIDTH, sizeof(uint16_t));
+        if (black_line) {
+            for (int y = 0; y < LOGICAL_DISPLAY_HEIGHT; y++) {
+                esp_lcd_panel_draw_bitmap(panel_handle, 0, y, LOGICAL_DISPLAY_WIDTH, y + 1, black_line);
+            }
+            free(black_line);
+        }
+    }
+
     // Phase 4: Play sequence from PSRAM with OPTIMIZED SPEED (anti-tearing)
     ESP_LOGI(TAG, "▶️ Playing %d frames with display sync...", g_num_loaded_frames);
     uint32_t frame_start_time;
@@ -513,8 +676,17 @@ esp_err_t play_jpeg_sequence_from_manifest(const char* manifest_path, uint32_t f
             ESP_LOGI(TAG, "🏎️ Frame %d: decode=%lums, total=%lums", i, decode_time, total_time);
         }
 
-        // Conservative delay: always wait the minimum frame time for smooth display
-        uint32_t min_frame_time = frame_delay_ms;
+        // allow real-time adjustment via rotary encoder
+        int step = encoder_get_delta();
+        if (step) {
+            int32_t new_delay = (int32_t)g_frame_delay_ms + step * 5;
+            if (new_delay < 30)  new_delay = 30;
+            if (new_delay > 100) new_delay = 100;
+            g_frame_delay_ms = (uint32_t)new_delay;
+            ESP_LOGI("ENC","delay=%" PRIu32 " ms", g_frame_delay_ms);
+        }
+
+        uint32_t min_frame_time = g_frame_delay_ms;
         if (total_time < min_frame_time) {
             vTaskDelay(pdMS_TO_TICKS(min_frame_time - total_time));
         } else {

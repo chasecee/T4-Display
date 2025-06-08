@@ -281,7 +281,17 @@ def main():
 
     try:
         run_command_file_path = os.path.join(script_dir, "run-command.txt")
-        command_to_write = f"python convert.py --source ./source --output ./output --size {output_size[0]} {output_size[1]} --rotate {args.rotate} --frame_stride {args.frame_stride} --jpeg_quality {args.jpeg_quality} --qtables {args.qtables}"
+        # Persist the exact command that was run, reflecting the real --output directory
+        command_to_write = (
+            f"python convert.py "
+            f"--source {args.source} "
+            f"--output {args.output} "
+            f"--size {output_size[0]} {output_size[1]} "
+            f"--rotate {args.rotate} "
+            f"--frame_stride {args.frame_stride} "
+            f"--jpeg_quality {args.jpeg_quality} "
+            f"--qtables {args.qtables}"
+        )
         if args.post_optimize:
             command_to_write += " --post_optimize"
         if args.clear_output:

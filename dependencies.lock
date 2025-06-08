@@ -12,7 +12,7 @@ dependencies:
   espressif/esp_jpeg:
     dependencies: []
     source:
-      path: /Users/chase/Code/T4-Display/components/espressif__esp_jpeg
+      path: /Users/chase/Code/esp-projects/T4-Display/components/espressif__esp_jpeg
       type: local
     version: 1.3.0
   espressif/esp_lcd_ili9341:
@@ -37,6 +37,6 @@ direct_dependencies:
 - espressif/esp_jpeg
 - espressif/esp_lcd_ili9341
 - idf
-manifest_hash: 7d860d6308a551ed9dbdbf74c9fb52dd5adbbee535d7a8ec0d2e35178bed8578
+manifest_hash: 23b5a2149a23655247b1f35c65fd7924b13d23278a21e7c266d60bee0f25cdaf
 target: esp32
 version: 2.0.0

@@ -14,6 +14,8 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include "esp_heap_caps.h"
+#include "encoder.h"
+#include "esp_timer.h"
 
 static const char *TAG = "T4_DISPLAY";
 
@@ -32,6 +34,8 @@ static const char *TAG = "T4_DISPLAY";
 
 // LCD panel handle
 esp_lcd_panel_handle_t panel_handle = NULL;
+
+volatile uint32_t g_frame_delay_ms = 50;
 
 void app_main(void)
 {
@@ -162,15 +166,26 @@ cleanup_test_jpg:
     if (out_buf) heap_caps_free(out_buf);
     if (work_buf) heap_caps_free(work_buf);
 
-    // --- Play sequence from manifest (test.jpg stays visible during loading) --- 
+    // --- Play sequence from manifest (test.jpg was only loading screen) --- 
     const char* manifest_file = "/spiffs/output/manifest.txt";
-    uint32_t frame_delay_ms = 80; // Increased speed: 80ms = ~12.5 FPS (was 120ms = ~8.3 FPS)
 
-    ESP_LOGI(TAG, "🎬 Attempting to play sequence from: %s at %" PRIu32 " ms per frame", manifest_file, frame_delay_ms);
+    ESP_LOGI(TAG, "🎬 Attempting to play sequence from: %s at %" PRIu32 " ms per frame", manifest_file, g_frame_delay_ms);
     
+    // Initialise rotary encoder
+    encoder_init();
+
     // Loop to continuously play the sequence
     while (1) {
-        esp_err_t play_ret = play_jpeg_sequence_from_manifest(manifest_file, frame_delay_ms);
+        // Read encoder every loop; adjust delay in 5-ms steps
+        int step = encoder_get_delta();
+        if (step) {
+            int32_t new_delay = (int32_t)g_frame_delay_ms + step * 5;
+            if (new_delay < 30)  new_delay = 30;
+            if (new_delay > 100) new_delay = 100;
+            g_frame_delay_ms = (uint32_t)new_delay;
+            ESP_LOGI(TAG,"Frame delay set to %" PRIu32 " ms", g_frame_delay_ms);
+        }
+        esp_err_t play_ret = play_jpeg_sequence_from_manifest(manifest_file, g_frame_delay_ms);
         if (play_ret == ESP_OK) {
             ESP_LOGI(TAG, "🎉 Sequence finished. Replaying...");
         } else {
@@ -179,5 +194,12 @@ cleanup_test_jpg:
         }
         // Add a small delay before replaying even on success, if desired
         // vTaskDelay(pdMS_TO_TICKS(1000)); 
+
+        // inside while loop before step processing
+        static uint32_t raw_dbg_timer = 0;
+        if (esp_timer_get_time() - raw_dbg_timer > 500000){ // every 500 ms
+            raw_dbg_timer = esp_timer_get_time();
+            ESP_LOGI("RAW","A=%d B=%d", gpio_get_level(22), gpio_get_level(21));
+        }
     }
 }
