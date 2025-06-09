@@ -35,7 +35,7 @@ static const char *TAG = "T4_DISPLAY";
 // LCD panel handle
 esp_lcd_panel_handle_t panel_handle = NULL;
 
-volatile uint32_t g_frame_delay_ms = 50;
+volatile uint32_t g_frame_delay_ms = 100;  // Start above decode time so encoder changes are visible
 
 void app_main(void)
 {

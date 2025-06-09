@@ -26,7 +26,7 @@ void encoder_init(void)
         .channel        = PCNT_CHANNEL_0,
         .unit           = PCNT_UNIT_USED,
         .pos_mode       = PCNT_COUNT_INC,      // rising edge = +1 when ctrl high
-        .neg_mode       = PCNT_COUNT_DEC,      // falling edge = -1 when ctrl high
+        .neg_mode       = PCNT_COUNT_INC,      // count both edges same sign (handled by ctrl)
         .lctrl_mode     = PCNT_MODE_KEEP,
         .hctrl_mode     = PCNT_MODE_REVERSE,   // reverse dir when ctrl high
         .counter_h_lim  = 32767,
@@ -39,6 +39,7 @@ void encoder_init(void)
     ch1.pulse_gpio_num = ENC_B_GPIO;
     ch1.ctrl_gpio_num  = ENC_A_GPIO;
     ch1.channel        = PCNT_CHANNEL_1;
+    ch1.neg_mode       = PCNT_COUNT_INC;
     pcnt_unit_config(&ch1);
 
     // Temporarily disable glitch filter while debugging signal

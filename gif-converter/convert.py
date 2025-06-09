@@ -137,14 +137,16 @@ def process_media_file(input_path, base_output_dir, size=(320, 240), rotation=0,
                 
             img_final_rgb.save(out_path, "JPEG", **save_params)
             print(f"Saved optimized JPEG frame (original index {original_frame_idx}) as: {out_path} (Quality: {jpeg_quality}, QTables: {args.qtables})")
-            generated_manifest_entries.append(jpeg_filename)
+            file_sz = os.path.getsize(out_path)
+            generated_manifest_entries.append(f"{jpeg_filename} {file_sz}")
             processed_frames_in_this_file_count += 1
         except Exception as e:
             print(f"Error saving JPEG frame {out_path}: {e}")
             print(f"  Falling back to basic JPEG save...")
             try:
                 img_final_rgb.save(out_path, "JPEG", quality=jpeg_quality, optimize=True)
-                generated_manifest_entries.append(jpeg_filename)
+                file_sz = os.path.getsize(out_path)
+                generated_manifest_entries.append(f"{jpeg_filename} {file_sz}")
                 processed_frames_in_this_file_count += 1
             except Exception as e2:
                 print(f"  Fallback also failed: {e2}")
@@ -239,8 +241,8 @@ def main():
     if all_manifest_entries:
         manifest_path = os.path.join(args.output, 'manifest.txt')
         with open(manifest_path, 'w') as mf:
-            for frame_file_rel_path in sorted(all_manifest_entries): # Sort manifest entries
-                mf.write(frame_file_rel_path + '\n')
+            for line in sorted(all_manifest_entries):
+                mf.write(line + '\n')
         print(f"Generated manifest.txt at {manifest_path} with {len(all_manifest_entries)} entries.")
     else:
         print("No frames were processed, so no manifest.txt was generated.")
@@ -250,7 +252,7 @@ def main():
         print(f"\n🗜️ Post-processing {len(all_manifest_entries)} JPEG files...")
         optimized_count = 0
         for frame_file in all_manifest_entries:
-            filepath = os.path.join(args.output, frame_file)
+            filepath = os.path.join(args.output, frame_file.split()[0])
             if optimize_jpeg_file(filepath):
                 optimized_count += 1
         print(f"✅ Optimized {optimized_count}/{len(all_manifest_entries)} files with external tools")

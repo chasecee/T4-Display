@@ -1,1 +1,1 @@
-spiffs_create_partition_image(storage ../data FLASH_IN_PROJECT) 
+spiffs_create_partition_image(storage . FLASH_IN_PROJECT) 

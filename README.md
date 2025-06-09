@@ -158,6 +158,77 @@ esp_err_t play_jpeg_sequence_from_manifest(const char* manifest_path, uint32_t f
 
 Found a bug? Want to add a feature? PRs welcome! Just keep it sassy and clean! 💅
 
+## 🗂️ Component Optimization
+
+Tired of your ESP32 carrying more baggage than necessary? Use our minimal configuration:
+
+### Option 1: Minimal Build (Recommended)
+
+```bash
+# Use the minimal config (saves ~40-50% flash space!)
+cp sdkconfig.minimal sdkconfig
+idf.py build
+```
+
+### ⚠️ **IMPORTANT: Protecting Your Minimal Config**
+
+Your `sdkconfig` can get overwritten! Here's how to keep it safe:
+
+```bash
+# 1. Always keep sdkconfig.minimal as your backup
+cp sdkconfig.minimal sdkconfig.backup
+
+# 2. Before any ESP-IDF operations that might change config:
+cp sdkconfig.minimal sdkconfig
+
+# 3. After menuconfig or updates, restore if needed:
+cp sdkconfig.minimal sdkconfig
+
+# 4. Check if your config got messed with:
+diff sdkconfig.minimal sdkconfig
+```
+
+**When sdkconfig gets overwritten:**
+
+- ❌ Running `idf.py menuconfig` and saving
+- ❌ ESP-IDF framework updates
+- ❌ Running `idf.py reconfigure`
+- ❌ Changing target chips
+- ❌ Build system "fixes" conflicting options
+
+**Pro tip:** Add `sdkconfig.minimal` to your version control, NOT `sdkconfig`!
+
+### Option 2: Manual Component Audit
+
+```bash
+# Check what's actually being compiled
+idf.py build | grep "Compiling"
+```
+
+**What the minimal config removes:**
+
+- ❌ WiFi stack (saves ~300KB)
+- ❌ Bluetooth (saves ~200KB)
+- ❌ Ethernet drivers
+- ❌ mbedTLS crypto libraries (saves ~150KB)
+- ❌ HTTP/MQTT clients
+- ❌ Touch sensor drivers
+- ❌ I2S audio drivers
+- ❌ USB support
+- ❌ Unnecessary ADC calibration
+
+**What it keeps:**
+
+- ✅ Display drivers (ILI9341)
+- ✅ SPIFFS file system
+- ✅ JPEG decoder
+- ✅ Rotary encoder (PCNT)
+- ✅ SPI/GPIO drivers
+- ✅ PSRAM support
+- ✅ Performance optimizations
+
+**Result:** Binary size drops from ~640KB to ~300-400KB! 💅
+
 ## 📝 License
 
 MIT License - Go wild, make something awesome! ✨

@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include <assert.h>
@@ -207,8 +208,8 @@ esp_err_t decode_and_display_jpeg(const uint8_t* jpeg_data, size_t jpeg_data_siz
         // Decode straight into external_out_buffer (or allocate fallback)
         if (external_out_buffer != NULL) {
             if (actual_outbuf_size_needed > external_out_buffer_size) {
-                ESP_LOGE(TAG, "❌ External buffer too small. Need: %zu, Have: %zu", 
-                         actual_outbuf_size_needed, external_out_buffer_size);
+                ESP_LOGE(TAG, "❌ External buffer too small. Need: %lu, Have: %lu", 
+                         (unsigned long)actual_outbuf_size_needed, (unsigned long)external_out_buffer_size);
                 return ESP_ERR_NO_MEM;
             }
             outbuf_to_use = external_out_buffer;
@@ -309,8 +310,8 @@ esp_err_t init_spiffs(void) {
     size_t total = 0, used = 0;
     ret = esp_spiffs_info("storage", &total, &used);
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "📊 SPIFFS: total: %zu, used: %zu, free: %zu (%d%% used)", 
-                 total, used, total - used, (int)((used * 100) / total));
+        ESP_LOGI(TAG, "📊 SPIFFS: total: %lu, used: %lu, free: %lu (%d%% used)", 
+                 (unsigned long)total, (unsigned long)used, (unsigned long)(total - used), (int)((used * 100) / total));
     }
     
     return ESP_OK;
@@ -331,7 +332,7 @@ esp_err_t load_and_display_raw_image(const char* filename) {
     
     // Calculate total pixels from file size (RGB565: 2 bytes per pixel)
     size_t total_pixels = st.st_size / 2;
-    ESP_LOGI(TAG, "📐 Image contains %zu pixels", total_pixels);
+    ESP_LOGI(TAG, "📐 Image contains %lu pixels", (unsigned long)total_pixels);
     
     // Allocate buffer for image data
     uint16_t* image_data = malloc(st.st_size);
@@ -488,20 +489,43 @@ esp_err_t play_jpeg_sequence_from_manifest(const char* manifest_path, uint32_t f
             line_buffer[strcspn(line_buffer, "\r\n")] = 0;
             if (strlen(line_buffer) == 0) continue;
 
-            if (strlen(line_buffer) > MAX_FILENAME_LEN - 1) {
-                ESP_LOGW(TAG, "⚠️ Filename too long, skipping: %s", line_buffer);
+            // Extract filename (first token) and optional size (second token)
+            char filename_only[MAX_FILENAME_LEN];
+            unsigned long file_size_hint = 0;
+            int tokens = sscanf(line_buffer, "%255s %lu", filename_only, &file_size_hint);
+            if (tokens < 1) {
+                continue; // malformed line
+            }
+
+            if (strlen(filename_only) > MAX_FILENAME_LEN - 1) {
+                ESP_LOGW(TAG, "⚠️ Filename too long, skipping: %s", filename_only);
                 continue;
             }
 
-            int written = snprintf(image_path, sizeof(image_path), "/spiffs/output/%s", line_buffer);
+            int written = snprintf(image_path, sizeof(image_path), "/spiffs/output/%s", filename_only);
             if (written < 0 || written >= sizeof(image_path)) {
-                ESP_LOGW(TAG, "⚠️ Path truncation, skipping: %s", line_buffer);
+                ESP_LOGW(TAG, "⚠️ Path truncation, skipping: %s", filename_only);
                 continue;
             }
 
-            struct stat st;
-            if (stat(image_path, &st) == 0 && st.st_size > 0) {
-                total_jpeg_data_size += st.st_size;
+            size_t sz = 0;
+            if (file_size_hint > 0) {
+                sz = file_size_hint;
+            } else {
+                unsigned long sz_temp = 0;
+                if (sscanf(line_buffer, "%*s %lu", &sz_temp) == 1 && sz_temp > 0) {
+                    sz = sz_temp;
+                } else {
+                    // No size column; stat the file to determine size
+                    struct stat st;
+                    if (stat(image_path, &st) == 0 && st.st_size > 0) {
+                        sz = st.st_size;
+                    }
+                }
+            }
+
+            if (sz > 0) {
+                total_jpeg_data_size += sz;
                 num_frames++;
             }
         }
@@ -513,7 +537,7 @@ esp_err_t play_jpeg_sequence_from_manifest(const char* manifest_path, uint32_t f
         }
 
         // Phase 2: Allocate buffers if not already allocated
-        ESP_LOGI(TAG, "🧠 Allocating buffers for %d frames (%zu bytes)...", num_frames, total_jpeg_data_size);
+        ESP_LOGI(TAG, "🧠 Allocating buffers for %d frames (%lu bytes)...", num_frames, (unsigned long)total_jpeg_data_size);
         
         g_preloaded_frames = (preloaded_jpeg_frame_t*)malloc(num_frames * sizeof(preloaded_jpeg_frame_t));
         if (!g_preloaded_frames) {
@@ -564,6 +588,8 @@ esp_err_t play_jpeg_sequence_from_manifest(const char* manifest_path, uint32_t f
         ESP_LOGI(TAG, "🚀 Work buffer allocated in %s RAM for optimal performance", 
                  heap_caps_get_free_size(MALLOC_CAP_INTERNAL) > JPEG_WORK_BUFFER_SIZE_ALLOC ? "INTERNAL" : "EXTERNAL");
 
+
+
         // Phase 3: Load JPEGs into PSRAM
         ESP_LOGI(TAG, "⏳ Loading JPEGs into PSRAM...");
         f = fopen(manifest_path, "r");
@@ -585,40 +611,51 @@ esp_err_t play_jpeg_sequence_from_manifest(const char* manifest_path, uint32_t f
             line_buffer[strcspn(line_buffer, "\r\n")] = 0;
             if (strlen(line_buffer) == 0) continue;
 
-            if (strlen(line_buffer) > MAX_FILENAME_LEN - 1) {
-                ESP_LOGW(TAG, "⚠️ Filename too long, skipping: %s", line_buffer);
-                continue;
-            }
+            // Parse filename and optional size again
+            char filename_only2[MAX_FILENAME_LEN];
+            unsigned long size_hint2 = 0;
+            int tokens = sscanf(line_buffer, "%255s %lu", filename_only2, &size_hint2);
+            if (tokens < 1) {continue;}
 
-            int written = snprintf(image_path, sizeof(image_path), "/spiffs/output/%s", line_buffer);
+            if (strlen(filename_only2) > MAX_FILENAME_LEN - 1){ESP_LOGW(TAG, "⚠️ Filename too long, skipping: %s", filename_only2); continue;}
+
+            int written = snprintf(image_path, sizeof(image_path), "/spiffs/output/%s", filename_only2);
             if (written < 0 || written >= sizeof(image_path)) {
-                ESP_LOGW(TAG, "⚠️ Path truncation, skipping: %s", line_buffer);
+                ESP_LOGW(TAG, "⚠️ Path truncation, skipping: %s", filename_only2);
                 continue;
             }
             
             FILE* img_f = fopen(image_path, "rb");
-            if (!img_f) continue;
-
-            struct stat st;
-            if (stat(image_path, &st) != 0 || st.st_size == 0) {
-                fclose(img_f);
+            if (!img_f) {
+                ESP_LOGW(TAG, "⚠️ Cannot open file: %s", image_path);
                 continue;
             }
 
-            size_t bytes_read = fread(current_psram_pos, 1, st.st_size, img_f);
+            // Just use the actual file size, ignore manifest hint
+            struct stat st;
+            if (stat(image_path, &st) != 0) {
+                fclose(img_f);
+                continue;
+            }
+            size_t file_size = st.st_size;
+
+            size_t bytes_read = fread(current_psram_pos, 1, file_size, img_f);
             fclose(img_f);
 
-            if (bytes_read == st.st_size) {
+            if (bytes_read == file_size) {
                 g_preloaded_frames[loaded_frames].data = current_psram_pos;
                 g_preloaded_frames[loaded_frames].size = bytes_read;
                 current_psram_pos += bytes_read;
                 loaded_frames++;
+            } else {
+                ESP_LOGW(TAG, "⚠️ File read failed: %s - expected %lu bytes, read %lu bytes", 
+                         filename_only2, (unsigned long)file_size, (unsigned long)bytes_read);
+            }
                 
-                // Log progress every 20 frames
-                if (loaded_frames % 20 == 0) {
-                    ESP_LOGI(TAG, "📥 Loaded %d/%d frames...", loaded_frames, num_frames);
-                    vTaskDelay(1);
-                }
+            // Log progress every 20 frames
+            if (loaded_frames % 20 == 0) {
+                ESP_LOGI(TAG, "📥 Loaded %d/%d frames...", loaded_frames, num_frames);
+                vTaskDelay(1);
             }
         }
         fclose(f);
@@ -673,15 +710,15 @@ esp_err_t play_jpeg_sequence_from_manifest(const char* manifest_path, uint32_t f
         
         // Performance logging every 50 frames
         if (i % 50 == 0) {
-            ESP_LOGI(TAG, "🏎️ Frame %d: decode=%lums, total=%lums", i, decode_time, total_time);
+            ESP_LOGI(TAG, "🏎️ Frame %d: decode=%lums, total=%lums, target=%lums", i, decode_time, total_time, min_frame_time);
         }
 
         // allow real-time adjustment via rotary encoder
         int step = encoder_get_delta();
         if (step) {
-            int32_t new_delay = (int32_t)g_frame_delay_ms + step * 5;
-            if (new_delay < 30)  new_delay = 30;
-            if (new_delay > 100) new_delay = 100;
+            int32_t new_delay = (int32_t)g_frame_delay_ms + step * 10;
+            if (new_delay < 70)  new_delay = 70;   // Above decode time so delays actually matter
+            if (new_delay > 300) new_delay = 300;  // Much slower for visible difference
             g_frame_delay_ms = (uint32_t)new_delay;
             ESP_LOGI("ENC","delay=%" PRIu32 " ms", g_frame_delay_ms);
         }
