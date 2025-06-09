@@ -710,7 +710,7 @@ esp_err_t play_jpeg_sequence_from_manifest(const char* manifest_path, uint32_t f
         
         // Performance logging every 50 frames
         if (i % 50 == 0) {
-            ESP_LOGI(TAG, "🏎️ Frame %d: decode=%lums, total=%lums, target=%lums", i, decode_time, total_time, min_frame_time);
+            ESP_LOGI(TAG, "🏎️ Frame %d: decode=%lums, total=%lums, target=%lums", i, decode_time, total_time, g_frame_delay_ms);
         }
 
         // allow real-time adjustment via rotary encoder
@@ -718,7 +718,7 @@ esp_err_t play_jpeg_sequence_from_manifest(const char* manifest_path, uint32_t f
         if (step) {
             int32_t new_delay = (int32_t)g_frame_delay_ms + step * 10;
             if (new_delay < 70)  new_delay = 70;   // Above decode time so delays actually matter
-            if (new_delay > 300) new_delay = 300;  // Much slower for visible difference
+            if (new_delay > 150) new_delay = 150;  // Much slower for visible difference
             g_frame_delay_ms = (uint32_t)new_delay;
             ESP_LOGI("ENC","delay=%" PRIu32 " ms", g_frame_delay_ms);
         }

@@ -2,6 +2,7 @@
 #include "driver/pcnt.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #define ENC_A_GPIO 22  // SCL pin on 5-pin JST
 #define ENC_B_GPIO 21  // SDA pin on 5-pin JST
@@ -19,28 +20,20 @@ void encoder_init(void)
     };
     gpio_config(&io);
 
-    // Configure first channel: pulse=A, ctrl=B
-    pcnt_config_t ch0 = {
+    // Simple encoder config: count A pulses, use B for direction
+    pcnt_config_t pcnt_config = {
         .pulse_gpio_num = ENC_A_GPIO,
         .ctrl_gpio_num  = ENC_B_GPIO,
         .channel        = PCNT_CHANNEL_0,
         .unit           = PCNT_UNIT_USED,
-        .pos_mode       = PCNT_COUNT_INC,      // rising edge = +1 when ctrl high
-        .neg_mode       = PCNT_COUNT_INC,      // count both edges same sign (handled by ctrl)
-        .lctrl_mode     = PCNT_MODE_KEEP,
-        .hctrl_mode     = PCNT_MODE_REVERSE,   // reverse dir when ctrl high
+        .pos_mode       = PCNT_COUNT_INC,      // rising edge = +1
+        .neg_mode       = PCNT_COUNT_DIS,      // don't count falling edge
+        .lctrl_mode     = PCNT_MODE_REVERSE,   // reverse when B is low
+        .hctrl_mode     = PCNT_MODE_KEEP,      // keep when B is high
         .counter_h_lim  = 32767,
         .counter_l_lim  = -32768,
     };
-    pcnt_unit_config(&ch0);
-
-    // Second channel: pulse=B ctrl=A so both edges are counted
-    pcnt_config_t ch1 = ch0;
-    ch1.pulse_gpio_num = ENC_B_GPIO;
-    ch1.ctrl_gpio_num  = ENC_A_GPIO;
-    ch1.channel        = PCNT_CHANNEL_1;
-    ch1.neg_mode       = PCNT_COUNT_INC;
-    pcnt_unit_config(&ch1);
+    pcnt_unit_config(&pcnt_config);
 
     // Temporarily disable glitch filter while debugging signal
     // pcnt_set_filter_value(PCNT_UNIT_USED, 1000);
@@ -54,18 +47,30 @@ void encoder_init(void)
 int encoder_get_delta(void)
 {
     static int16_t last = 0;
+    static uint32_t last_change_time = 0;
     int16_t now;
     pcnt_get_counter_value(PCNT_UNIT_USED, &now);
-    int delta = now - last;
+    int raw_delta = now - last;
 
-    if (delta != 0) {
-        ESP_LOGI("ENC", "delta=%d", delta);
+    // With single edge counting, each physical click should be 1 count
+    // But add some tolerance for noise/bouncing
+    int clicks = 0;
+    if (raw_delta >= 1) clicks = 1;
+    else if (raw_delta <= -1) clicks = -1;
+    
+    // Basic debouncing: ignore rapid changes
+    uint32_t current_time = esp_timer_get_time() / 1000; // ms
+    if (clicks != 0 && (current_time - last_change_time > 100)) { // 100ms debounce
+        ESP_LOGI("ENC", "clicks=%d (raw=%d)", clicks, raw_delta);
         last = now;
+        last_change_time = current_time;
+        
         // reset counters if they drift far to avoid overflow
         if (now > 16000 || now < -16000) {
             pcnt_counter_clear(PCNT_UNIT_USED);
             last = 0;
         }
+        return clicks;
     }
-    return delta;
+    return 0;
 } 
